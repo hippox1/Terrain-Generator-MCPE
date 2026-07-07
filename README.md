@@ -1,5 +1,5 @@
 # Terrain-Generator-MCPE
-Fully Script based for generating terrain for mcpe using Javascripts.
+Fully Scripts based for generating terrain for mcpe using Javascripts.
 <img width="1890" height="1070" alt="image" src="https://github.com/user-attachments/assets/1f0d016b-9647-4735-afeb-34d93037e2cd" />
 Using command or function in script to generate terrain inside Minecraft:
 
