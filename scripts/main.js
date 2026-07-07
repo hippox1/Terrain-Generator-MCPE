@@ -110,14 +110,14 @@ const BIOME_CONFIG = {
             { id: "minecraft:grass_block", count: 1 },
             { id: "minecraft:dirt", count: 3 },
         ],
-        requiredHeight: 6, // layers(4) + 1 transition block + 1 stone above bedrock
+        requiredHeight: 7, // layers(4) + 3-block bedrock zone + 1 stone buffer above it
     },
     desert: {
         topLayers: [
             { id: "minecraft:sand", count: 3 },
-            { id: "minecraft:sandstone", count: 2 },
+            { id: "minecraft:sandstone", count: 4 },
         ],
-        requiredHeight: 7, // layers(5) + 1 transition block + 1 stone above bedrock
+        requiredHeight: 10, // layers(7) + 3-block bedrock zone + 1 stone buffer above it
     },
 };
 
@@ -125,8 +125,9 @@ const BIOME_CONFIG = {
  *  Column-level terrain fill                                         *
  * ------------------------------------------------------------------ */
 
-// Bedrock floor is now two layers: a solid bottom layer, then a layer above it
-// that's a random mix of bedrock and stone (like vanilla's bedrock transition zone).
+// Bedrock floor is three layers: a solid bottom layer, then two layers above it that
+// are each independently randomized between bedrock and stone (a thicker transition
+// zone, like vanilla's bedrock gradient).
 function fillColumnBase(dimension, x, z, surfaceY, minY, topLayers, seed) {
     let y = surfaceY;
     for (const layer of topLayers) {
@@ -139,11 +140,13 @@ function fillColumnBase(dimension, x, z, surfaceY, minY, topLayers, seed) {
         y = bottomY - 1;
     }
     // y is now the top of the "stone + bedrock" zone.
-    if (y >= minY + 2) {
-        dimension.fillBlocks(new BlockVolume({ x, y: minY + 2, z }, { x, y, z }), STONE_BLOCK);
+    if (y >= minY + 3) {
+        dimension.fillBlocks(new BlockVolume({ x, y: minY + 3, z }, { x, y, z }), STONE_BLOCK);
     }
-    const mixedBlock = hashCoords(x, z, seed + 13131) < BEDROCK_MIX_CHANCE ? BEDROCK_BLOCK : STONE_BLOCK;
-    dimension.setBlockType({ x, y: minY + 1, z }, mixedBlock);
+    const mixedBlock2 = hashCoords(x, z, seed + 13231) < BEDROCK_MIX_CHANCE ? BEDROCK_BLOCK : STONE_BLOCK;
+    const mixedBlock1 = hashCoords(x, z, seed + 13131) < BEDROCK_MIX_CHANCE ? BEDROCK_BLOCK : STONE_BLOCK;
+    dimension.setBlockType({ x, y: minY + 2, z }, mixedBlock2);
+    dimension.setBlockType({ x, y: minY + 1, z }, mixedBlock1);
     dimension.setBlockType({ x, y: minY, z }, BEDROCK_BLOCK);
 }
 
@@ -157,6 +160,7 @@ function clearAboveSurface(dimension, x, z, fromY, maxY) {
  *  Plains decorations                                                *
  * ------------------------------------------------------------------ */
 
+// Both cut a further 20% from the previous rates (0.18 -> 0.144, 0.01656 -> 0.01325)
 const PLAINS_GRASS_TUFT_CHANCE = 0.144;
 const PLAINS_TALL_GRASS_SHARE = 0.35;
 const PLAINS_FLOWER_CHANCE = 0.01325;
@@ -199,6 +203,7 @@ function decoratePlainsColumn(dimension, x, z, surfaceY, maxY, seed) {
  *  Desert decorations                                                *
  * ------------------------------------------------------------------ */
 
+// Cactus and deadbush both cut a further 20% (0.008 -> 0.0064, 0.036 -> 0.0288)
 const DESERT_CACTUS_CHANCE = 0.0064;
 const DESERT_DEADBUSH_CHANCE = 0.0288;
 
@@ -441,33 +446,37 @@ function* placeTrees(dimension, trees, surfaceYAt, seed) {
         yield;
     }
 
-    // Pass 2: leaves, stepped-pyramid style with organic gaps -- bottom two layers
-    // wide (5x5, corners sometimes cut), then narrower (3x3, more parts cut),
-    // tapering to a single block on top. Logs are never overwritten; leaves from
-    // different trees are allowed to merge.
+    // Pass 2: leaves -- 4 main layers: bottom two 5x5, top two 3x3. Only diagonal
+    // corners are ever cut (more aggressively on the 3x3 layers); the 4 orthogonal
+    // neighbors of the trunk are never cut, so a log never gets exposed at its own
+    // height. A cut corner on the lower 3x3 layer is never re-grown on the 3x3
+    // layer above it, so there's never a leaf floating with nothing under it.
+    // Height-4 trees always use the short canopy start; height-6 always starts
+    // higher; height-5 trees randomly pick either, for variety. Whenever that
+    // leaves the top log's own layer uncovered, an extra heavily-cut 3x3 cap gets
+    // added above it (with the center always kept, so the log is never bare).
     for (const tree of treeData) {
-        const leafBaseY = tree.surfaceY + (tree.height === 4 ? 2 : 4);
-        const leafTopY = tree.topLogY + 2;
-        const totalLayers = leafTopY - leafBaseY + 1;
+        let leafBaseY;
+        if (tree.height === 4) {
+            leafBaseY = tree.surfaceY + 2;
+        } else if (tree.height === 6) {
+            leafBaseY = tree.surfaceY + 4;
+        } else {
+            // height 5: randomly borrow the height-4 or height-6 canopy start.
+            const useTallStart = hashCoords(tree.x, tree.z, seed + 6161) < 0.5;
+            leafBaseY = tree.surfaceY + (useTallStart ? 4 : 2);
+        }
+        const leafTopY = leafBaseY + 3; // 4 main layers, always
+
+        // Tracks which diagonal corners were cut in the lower of the two 3x3 layers,
+        // so the layer above it never places a leaf with nothing supporting it below.
+        let lowerRadius1Cuts = null;
 
         for (let y = leafBaseY; y <= leafTopY; y++) {
             const i = y - leafBaseY; // 0 = bottom-most leaf layer
-            let radius;
-            let cornerCutChance;
-            let edgeCutChance;
-            if (i < 2) {
-                radius = 2;
-                cornerCutChance = 0.45;
-                edgeCutChance = 0;
-            } else if (i < totalLayers - 1) {
-                radius = 1;
-                cornerCutChance = 0.55;
-                edgeCutChance = 0.25;
-            } else {
-                radius = 0;
-                cornerCutChance = 0;
-                edgeCutChance = 0;
-            }
+            const radius = i < 2 ? 2 : 1;
+            const cornerCutChance = i < 2 ? 0.45 : 0.6;
+            const thisLayerCuts = radius === 1 ? new Set() : null;
 
             for (let dx = -radius; dx <= radius; dx++) {
                 for (let dz = -radius; dz <= radius; dz++) {
@@ -475,11 +484,39 @@ function* placeTrees(dimension, trees, surfaceYAt, seed) {
                     const bz = tree.z + dz;
                     const key = `${bx},${y},${bz}`;
                     if (logPositions.has(key)) continue;
-                    if (!shouldPlaceLeaf(bx, y, bz, dx, dz, radius, seed, cornerCutChance, edgeCutChance)) continue;
+
+                    const forcedCut = radius === 1 && lowerRadius1Cuts !== null && lowerRadius1Cuts.has(`${dx},${dz}`);
+                    // edgeCutChance is 0 -- only true diagonal corners are ever cut.
+                    const place = !forcedCut && shouldPlaceLeaf(bx, y, bz, dx, dz, radius, seed, cornerCutChance, 0);
+
+                    if (!place) {
+                        if (thisLayerCuts) thisLayerCuts.add(`${dx},${dz}`);
+                        continue;
+                    }
                     dimension.setBlockType({ x: bx, y, z: bz }, "minecraft:oak_leaves");
                 }
             }
+            if (radius === 1) lowerRadius1Cuts = thisLayerCuts;
         }
+
+        // If the 4 main layers don't reach above the top log (only possible for a
+        // height-5 tree using the short canopy start), the log's own top face would
+        // otherwise be bare. Add one more, more heavily cut 3x3 layer right above
+        // it -- corners AND edges can be cut here since there's no log left to
+        // expose, but the center is always kept (shouldPlaceLeaf never cuts dx=dz=0).
+        if (leafTopY <= tree.topLogY) {
+            const cappingY = tree.topLogY + 1;
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    const bx = tree.x + dx;
+                    const bz = tree.z + dz;
+                    if (logPositions.has(`${bx},${cappingY},${bz}`)) continue;
+                    if (!shouldPlaceLeaf(bx, cappingY, bz, dx, dz, 1, seed, 0.75, 0.45)) continue;
+                    dimension.setBlockType({ x: bx, y: cappingY, z: bz }, "minecraft:oak_leaves");
+                }
+            }
+        }
+
         yield;
     }
 }
@@ -529,7 +566,7 @@ function* generateTerrain(dimension, minX, maxX, minZ, maxZ, minY, maxY, seed, b
                 // stray bump can poke out above the pond's single, level water surface.
                 clearAboveSurface(dimension, x, z, Math.min(surfaceY, waterTop), maxY);
                 const depth = localDepthAt(x, z, feature, seed);
-                const bottom = Math.max(minY + 2, waterTop - depth + 1);
+                const bottom = Math.max(minY + 3, waterTop - depth + 1);
                 dimension.fillBlocks(new BlockVolume({ x, y: bottom, z }, { x, y: waterTop, z }), feature.liquidBlock);
                 handled = true;
             } else if (cls === "ring") {
@@ -584,7 +621,7 @@ function* generateTerrain(dimension, minX, maxX, minZ, maxZ, minY, maxY, seed, b
  *  Custom command registration                                       *
  * ------------------------------------------------------------------ */
 
-const MAX_COLUMNS = 40000; //200x200 area
+const MAX_COLUMNS = 40000;
 
 function resolveForcedCount(value) {
     if (value === undefined || value === null || value < 0) return undefined;
@@ -629,7 +666,7 @@ system.beforeEvents.startup.subscribe((init) => {
             if (maxY - minY < biomeCfg.requiredHeight + 1) {
                 return {
                     status: CustomCommandStatus.Failure,
-                    message: `The area needs to be at least ${biomeCfg.requiredHeight + 1} blocks tall for the ${biome} biome (layers + stone + 2-block bedrock transition).`,
+                    message: `The area needs to be at least ${biomeCfg.requiredHeight + 1} blocks tall for the ${biome} biome (layers + stone + 3-block bedrock transition).`,
                 };
             }
 
