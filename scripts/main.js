@@ -618,6 +618,41 @@ function* generateTerrain(dimension, minX, maxX, minZ, maxZ, minY, maxY, seed, b
 }
 
 /* ------------------------------------------------------------------ *
+ *  Generation speed                                                  *
+ * ------------------------------------------------------------------ */
+
+// runJob's per-tick budget is time-based and engine-controlled, so it isn't
+// something we can dial directly. Instead, we drive the generator ourselves:
+// process a fixed number of "steps" (each `yield` in generateTerrain/placeTrees
+// counts as one step, whether it's a column or a tree) synchronously, then
+// either move straight to the next tick (fast) or wait a few extra ticks
+// (normal/low) before continuing. Bigger columnsPerBatch + smaller
+// ticksBetweenBatches = faster but more demanding per tick; smaller batches +
+// longer waits = slower but much gentler on low-end devices/servers.
+const SPEED_PROFILES = {
+    low: { columnsPerBatch: 15, ticksBetweenBatches: 3 },
+    normal: { columnsPerBatch: 60, ticksBetweenBatches: 1 },
+    fast: { columnsPerBatch: 300, ticksBetweenBatches: 0 },
+};
+const DEFAULT_SPEED = "fast"; // matches the original (pre-speed-option) behavior
+
+function runGeneratorPaced(generator, profile) {
+    function step() {
+        let result;
+        for (let i = 0; i < profile.columnsPerBatch; i++) {
+            result = generator.next();
+            if (result.done) return;
+        }
+        if (profile.ticksBetweenBatches > 0) {
+            system.runTimeout(step, profile.ticksBetweenBatches);
+        } else {
+            system.run(step); // still yields to the next tick, just with no extra wait
+        }
+    }
+    step();
+}
+
+/* ------------------------------------------------------------------ *
  *  Custom command registration                                       *
  * ------------------------------------------------------------------ */
 
@@ -630,6 +665,7 @@ function resolveForcedCount(value) {
 
 system.beforeEvents.startup.subscribe((init) => {
     init.customCommandRegistry.registerEnum("terrain:biome", ["plains", "desert"]);
+    init.customCommandRegistry.registerEnum("terrain:speed", ["low", "normal", "fast"]);
 
     init.customCommandRegistry.registerCommand(
         {
@@ -645,9 +681,10 @@ system.beforeEvents.startup.subscribe((init) => {
                 { type: CustomCommandParamType.Integer, name: "seed" },
                 { type: CustomCommandParamType.Integer, name: "waterFeatures" },
                 { type: CustomCommandParamType.Integer, name: "treeBatches" },
+                { type: CustomCommandParamType.Enum, name: "terrain:speed" },
             ],
         },
-        (origin, from, to, biome, seed, waterFeatures, treeBatches) => {
+        (origin, from, to, biome, seed, waterFeatures, treeBatches, speed) => {
             const dimension = origin.sourceEntity?.dimension ?? world.getDimension("overworld");
             const biomeCfg = BIOME_CONFIG[biome];
 
@@ -655,6 +692,7 @@ system.beforeEvents.startup.subscribe((init) => {
                 seed !== undefined && seed !== null && seed >= 0 ? seed : Math.floor(Math.random() * 2147483647);
             const forcedWaterCount = resolveForcedCount(waterFeatures);
             const forcedTreeBatches = resolveForcedCount(treeBatches);
+            const resolvedSpeed = speed && SPEED_PROFILES[speed] ? speed : DEFAULT_SPEED;
 
             const minX = Math.floor(Math.min(from.x, to.x));
             const maxX = Math.floor(Math.max(from.x, to.x));
@@ -679,14 +717,15 @@ system.beforeEvents.startup.subscribe((init) => {
             }
 
             system.run(() => {
-                system.runJob(
-                    generateTerrain(dimension, minX, maxX, minZ, maxZ, minY, maxY, usedSeed, biome, forcedWaterCount, forcedTreeBatches)
+                const generator = generateTerrain(
+                    dimension, minX, maxX, minZ, maxZ, minY, maxY, usedSeed, biome, forcedWaterCount, forcedTreeBatches
                 );
+                runGeneratorPaced(generator, SPEED_PROFILES[resolvedSpeed]);
             });
 
             return {
                 status: CustomCommandStatus.Success,
-                message: `Generating ${columns}-column ${biome} terrain (seed: ${usedSeed})...`,
+                message: `Generating ${columns}-column ${biome} terrain (seed: ${usedSeed}, speed: ${resolvedSpeed})...`,
             };
         }
     );
