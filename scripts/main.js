@@ -357,12 +357,23 @@ function localDepthAt(x, z, feature, seed) {
  * ------------------------------------------------------------------ */
 
 const TREE_MARGIN = 5;
-const TREE_MIN_SPACING = 2; // Chebyshev distance; keeps a clear 3x3 around every trunk
-const TREE_PLACEMENT_ATTEMPTS = 6;
+// Personal-space square size per tree, randomized each time: a 3x3 square needs a
+// Chebyshev spacing of 2 to keep another tree's trunk out of it, a 5x5 needs 3.
+// (A 4x4 doesn't have a clean single center cell, so it's folded into this same
+// 2-3 range rather than getting its own distinct number.)
+const TREE_MIN_SPACING_OPTIONS = [2, 3];
+const TREE_PLACEMENT_ATTEMPTS = 8;
 
-function isFarEnoughFromTrees(tx, tz, existingTrees) {
+function pickTreeMinSpacing(rng) {
+    return TREE_MIN_SPACING_OPTIONS[Math.floor(rng() * TREE_MIN_SPACING_OPTIONS.length)];
+}
+
+// Respects BOTH trees' personal-space squares -- the required gap is whichever
+// tree (candidate or existing) asked for more room.
+function isFarEnoughFromTrees(tx, tz, candidateSpacing, existingTrees) {
     for (const t of existingTrees) {
-        if (Math.max(Math.abs(tx - t.x), Math.abs(tz - t.z)) < TREE_MIN_SPACING) return false;
+        const required = Math.max(candidateSpacing, t.minSpacing);
+        if (Math.max(Math.abs(tx - t.x), Math.abs(tz - t.z)) < required) return false;
     }
     return true;
 }
@@ -377,32 +388,36 @@ function planTreeBatches(rng, minX, maxX, minZ, maxZ, waterFeatures, seed, force
     if (forcedBatchCount !== undefined && forcedBatchCount !== null) {
         numBatches = Math.max(0, Math.min(MAX_FORCED_TREE_BATCHES, forcedBatchCount));
     } else {
+        // +30% relative to the previous 0.72 / 0.6 chances.
         numBatches = 0;
-        if (area >= 300 && rng() < 0.72) numBatches = 1;
-        if (numBatches === 1 && area >= 3000 && rng() < 0.6) numBatches = 2;
+        if (area >= 300 && rng() < 0.936) numBatches = 1;
+        if (numBatches === 1 && area >= 3000 && rng() < 0.78) numBatches = 2;
     }
 
     const trees = [];
     for (let b = 0; b < numBatches; b++) {
         const anchorX = Math.round(minX + TREE_MARGIN + rng() * (width - 2 * TREE_MARGIN));
         const anchorZ = Math.round(minZ + TREE_MARGIN + rng() * (depthZ - 2 * TREE_MARGIN));
-        const treeCount = 1 + Math.floor(rng() * 6); // 1-6
+        const treeCount = 5 + Math.floor(rng() * 6); // 5-10
 
         for (let t = 0; t < treeCount; t++) {
             for (let attempt = 0; attempt < TREE_PLACEMENT_ATTEMPTS; attempt++) {
-                const dx = Math.round((rng() - 0.5) * 10);
-                const dz = Math.round((rng() - 0.5) * 10);
+                // Wider spread than before (~±7 instead of ~±5) so 5-10 trees per
+                // batch can actually fit given the spacing requirement above.
+                const dx = Math.round((rng() - 0.5) * 14);
+                const dz = Math.round((rng() - 0.5) * 14);
                 let tx = anchorX + dx;
                 let tz = anchorZ + dz;
                 tx = Math.max(minX + 2, Math.min(maxX - 2, tx));
                 tz = Math.max(minZ + 2, Math.min(maxZ - 2, tz));
 
-                if (!isFarEnoughFromTrees(tx, tz, trees)) continue;
+                const candidateSpacing = pickTreeMinSpacing(rng);
+                if (!isFarEnoughFromTrees(tx, tz, candidateSpacing, trees)) continue;
                 if (waterFeatures.length > 0 && classifyAgainstFeatures(tx, tz, waterFeatures, seed).cls !== "outside")
                     continue;
 
                 const height = 4 + Math.floor(rng() * 3); // 4, 5, or 6
-                trees.push({ x: tx, z: tz, height });
+                trees.push({ x: tx, z: tz, height, minSpacing: candidateSpacing });
                 break;
             }
         }
@@ -446,27 +461,18 @@ function* placeTrees(dimension, trees, surfaceYAt, seed) {
         yield;
     }
 
-    // Pass 2: leaves -- 4 main layers: bottom two 5x5, top two 3x3. Only diagonal
+    // Pass 2: leaves -- 4 layers always: bottom two 5x5, top two 3x3. The canopy
+    // starts 2 logs up for a 4-tall trunk, 3 logs up for a 5-tall trunk, and 4 logs
+    // up for a 6-tall trunk -- which works out so the top of the canopy always
+    // lands exactly 1 block above the top log, so the log's top face is always
+    // naturally covered without needing any special-case capping. Only diagonal
     // corners are ever cut (more aggressively on the 3x3 layers); the 4 orthogonal
     // neighbors of the trunk are never cut, so a log never gets exposed at its own
     // height. A cut corner on the lower 3x3 layer is never re-grown on the 3x3
     // layer above it, so there's never a leaf floating with nothing under it.
-    // Height-4 trees always use the short canopy start; height-6 always starts
-    // higher; height-5 trees randomly pick either, for variety. Whenever that
-    // leaves the top log's own layer uncovered, an extra heavily-cut 3x3 cap gets
-    // added above it (with the center always kept, so the log is never bare).
     for (const tree of treeData) {
-        let leafBaseY;
-        if (tree.height === 4) {
-            leafBaseY = tree.surfaceY + 2;
-        } else if (tree.height === 6) {
-            leafBaseY = tree.surfaceY + 4;
-        } else {
-            // height 5: randomly borrow the height-4 or height-6 canopy start.
-            const useTallStart = hashCoords(tree.x, tree.z, seed + 6161) < 0.5;
-            leafBaseY = tree.surfaceY + (useTallStart ? 4 : 2);
-        }
-        const leafTopY = leafBaseY + 3; // 4 main layers, always
+        const leafBaseY = tree.surfaceY + (tree.height - 2); // 4->2nd log, 5->3rd log, 6->4th log
+        const leafTopY = leafBaseY + 3; // 4 layers total, always
 
         // Tracks which diagonal corners were cut in the lower of the two 3x3 layers,
         // so the layer above it never places a leaf with nothing supporting it below.
@@ -497,24 +503,6 @@ function* placeTrees(dimension, trees, surfaceYAt, seed) {
                 }
             }
             if (radius === 1) lowerRadius1Cuts = thisLayerCuts;
-        }
-
-        // If the 4 main layers don't reach above the top log (only possible for a
-        // height-5 tree using the short canopy start), the log's own top face would
-        // otherwise be bare. Add one more, more heavily cut 3x3 layer right above
-        // it -- corners AND edges can be cut here since there's no log left to
-        // expose, but the center is always kept (shouldPlaceLeaf never cuts dx=dz=0).
-        if (leafTopY <= tree.topLogY) {
-            const cappingY = tree.topLogY + 1;
-            for (let dx = -1; dx <= 1; dx++) {
-                for (let dz = -1; dz <= 1; dz++) {
-                    const bx = tree.x + dx;
-                    const bz = tree.z + dz;
-                    if (logPositions.has(`${bx},${cappingY},${bz}`)) continue;
-                    if (!shouldPlaceLeaf(bx, cappingY, bz, dx, dz, 1, seed, 0.75, 0.45)) continue;
-                    dimension.setBlockType({ x: bx, y: cappingY, z: bz }, "minecraft:oak_leaves");
-                }
-            }
         }
 
         yield;
