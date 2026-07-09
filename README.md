@@ -5,12 +5,13 @@ Fully Scripts based for generating terrain for mcpe using Javascripts.
 
 Using command or function in script to generate terrain inside Minecraft:
 
-/generate (from) (to) (biome) [seed optional] [waterFeature] [treeBatches]
+/generate (from) (to) (biome) [seed optional] [waterFeature] [treeBatches] [speed]
 
 The limit for generate is 200x200 area, for not lagging the world. (recommend to generate a 90-100x area).
 
 - waterFeature: determine the number of water/lava pool.
 - treeBatches: determine the number of tree batches, each batch contains around 5 trees.
+- speed: the speed for generation, from low, normal to fast.
 
 -1 is random, 0 is none, 1-10 is the requested number for features.
 
