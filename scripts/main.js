@@ -514,6 +514,18 @@ function* placeTrees(dimension, trees, surfaceYAt, seed) {
  * ------------------------------------------------------------------ */
 
 function* generateTerrain(dimension, minX, maxX, minZ, maxZ, minY, maxY, seed, biome, forcedWaterCount, forcedTreeBatches) {
+    if (biome === "void") {
+        // No noise, no layers, no decorations -- just clear the whole area to air.
+        for (let x = minX; x <= maxX; x++) {
+            for (let z = minZ; z <= maxZ; z++) {
+                dimension.fillBlocks(new BlockVolume({ x, y: minY, z }, { x, y: maxY, z }), "minecraft:air");
+                yield;
+            }
+        }
+        world.sendMessage(`§aTerrain generation complete! (biome: void, seed: ${seed})`);
+        return;
+    }
+
     const biomeCfg = BIOME_CONFIG[biome];
     const rng = mulberry32(seed);
 
@@ -652,13 +664,13 @@ function resolveForcedCount(value) {
 }
 
 system.beforeEvents.startup.subscribe((init) => {
-    init.customCommandRegistry.registerEnum("terrain:biome", ["plains", "desert"]);
+    init.customCommandRegistry.registerEnum("terrain:biome", ["plains", "desert", "void"]);
     init.customCommandRegistry.registerEnum("terrain:speed", ["low", "normal", "fast"]);
 
     init.customCommandRegistry.registerCommand(
         {
             name: "terrain:generate",
-            description: "Generates noise-based terrain (plains or desert) between two corners.",
+            description: "Generates noise-based terrain (plains, desert, or void/air) between two corners.",
             permissionLevel: CommandPermissionLevel.GameDirectors,
             mandatoryParameters: [
                 { type: CustomCommandParamType.Location, name: "from" },
@@ -689,7 +701,7 @@ system.beforeEvents.startup.subscribe((init) => {
             const minZ = Math.floor(Math.min(from.z, to.z));
             const maxZ = Math.floor(Math.max(from.z, to.z));
 
-            if (maxY - minY < biomeCfg.requiredHeight + 1) {
+            if (biome !== "void" && maxY - minY < biomeCfg.requiredHeight + 1) {
                 return {
                     status: CustomCommandStatus.Failure,
                     message: `The area needs to be at least ${biomeCfg.requiredHeight + 1} blocks tall for the ${biome} biome (layers + stone + 3-block bedrock transition).`,
