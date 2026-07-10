@@ -162,7 +162,7 @@ function clearAboveSurface(dimension, x, z, fromY, maxY) {
 
 // Both cut a further 20% from the previous rates (0.18 -> 0.144, 0.01656 -> 0.01325)
 const PLAINS_GRASS_TUFT_CHANCE = 0.144;
-const PLAINS_TALL_GRASS_SHARE = 0.35;
+const PLAINS_TALL_GRASS_SHARE = 0.15;
 const PLAINS_FLOWER_CHANCE = 0.01325;
 
 function placeTallGrass(dimension, x, surfaceY, z, maxY) {
