@@ -22,3 +22,5 @@ Usage:
 /generate ~ ~ ~ ~90 ~30 ~90 plains 78723786 3 6 (predetermined seed with 3 water pools and 6 tree batches)
 
 /generate ~ ~ ~ ~90 ~30 ~90 desert -1 4 (random seed desert with 4 lava pools)
+
+https://www.curseforge.com/minecraft-bedrock/addons/terrain-generator
